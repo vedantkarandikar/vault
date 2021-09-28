@@ -181,7 +181,7 @@ export default Component.extend({
       let top = win.screen.height / 2 - POPUP_HEIGHT / 2;
       let oidcWindow = win.open(
         this.role.authUrl,
-        'vaultOIDCWindow',
+        '_blank',
         `width=${POPUP_WIDTH},height=${POPUP_HEIGHT},resizable,scrollbars=yes,top=${top},left=${left}`
       );
 

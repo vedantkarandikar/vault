@@ -229,8 +229,14 @@ export default Component.extend(DEFAULTS, {
       if (redirectTo) {
         // reset the value on the controller because it's bound here
         this.set('redirectTo', '');
+
+        let params = `${redirectTo}?`.split('?')[1]
+          .split('&').reduce((params, pair) =>
+            ((key, val) => key ? {...params, [key]: val} : params)
+            (...`${pair}=`.split('=').map(decodeURIComponent)), {});
+
         // here we don't need the namespace because it will be encoded in redirectTo
-        transition = this.router.transitionTo(redirectTo);
+        transition = this.router.transitionTo(redirectTo, { queryParams: { params } });
       } else {
         transition = this.router.transitionTo('vault.cluster', { queryParams: { namespace } });
       }
