@@ -1574,6 +1574,18 @@ func TestOIDC_Path_OIDC_ProviderScope_TemplateValidation(t *testing.T) {
 			templ:         `{"sub": "alice", "other": "test"}`,
 			restrictedKey: "sub",
 		},
+		{
+			templ:         `{"auth_time": 123456, "other": "test"}`,
+			restrictedKey: "auth_time",
+		},
+		{
+			templ:         `{"at_hash": "abcdefg", "other": "test"}`,
+			restrictedKey: "at_hash",
+		},
+		{
+			templ:         `{"c_hash": "hijklmn", "other": "test"}`,
+			restrictedKey: "c_hash",
+		},
 	}
 	for _, tc := range testCases {
 		encodedTempl := base64.StdEncoding.EncodeToString([]byte(tc.templ))
@@ -1589,7 +1601,7 @@ func TestOIDC_Path_OIDC_ProviderScope_TemplateValidation(t *testing.T) {
 		})
 		expectError(t, resp, err)
 		errString := fmt.Sprintf(
-			"top level key %q not allowed. Restricted keys: iat, aud, exp, iss, sub, namespace",
+			"top level key %q not allowed. Restricted keys: iat, aud, exp, iss, sub, namespace, nonce, auth_time, at_hash, c_hash",
 			tc.restrictedKey,
 		)
 		// validate error message
