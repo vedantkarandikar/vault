@@ -1857,12 +1857,6 @@ func tokenResponse(response map[string]interface{}, errorCode, errorDescription 
 	}, nil
 }
 
-// - [x] The Access Token obtained from an OpenID Connect Authentication Request MUST be sent as a Bearer Token (Authorization: Bearer SlAV32hkKG)
-// - [x] The sub (subject) Claim MUST always be returned in the UserInfo Response.
-// - [x] When an error condition occurs, the UserInfo Endpoint returns an Error Response as defined in Section 3 of OAuth 2.0 Bearer Token Usage [RFC6750].
-//       (HTTP errors unrelated to RFC 6750 are returned to the User Agent using the appropriate HTTP status code.)
-// - [ ] If a Claim is not returned, that Claim Name SHOULD be omitted from the JSON object representing the Claims;
-//       it SHOULD NOT be present with a null or empty string value.
 func (i *IdentityStore) pathOIDCUserInfo(ctx context.Context, req *logical.Request, d *framework.FieldData) (*logical.Response, error) {
 	// Get the namespace
 	ns, err := namespace.FromContext(ctx)
