@@ -1519,9 +1519,14 @@ func authResponse(code, state, errorCode, errorDescription string) (*logical.Res
 
 	return &logical.Response{
 		Data: map[string]interface{}{
+<<<<<<< HEAD
 			logical.HTTPStatusCode:  statusCode,
 			logical.HTTPRawBody:     data,
 			logical.HTTPContentType: "application/json",
+=======
+			"code":  code,
+			"state": state,
+>>>>>>> f2ce49991 (Return state in response)
 		},
 	}, nil
 }

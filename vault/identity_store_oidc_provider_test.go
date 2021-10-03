@@ -777,10 +777,17 @@ func TestOIDC_Path_OIDC_Authorize(t *testing.T) {
 
 			// Assert that we receive an authorization code (base62) and state
 			expectSuccess(t, resp, err)
+<<<<<<< HEAD
 			assert.Regexp(t, "[a-zA-Z0-9]{32}", res.Code)
 			assert.NotEmpty(t, res.State)
 			assert.Empty(t, res.Error)
 			assert.Empty(t, res.ErrorDescription)
+=======
+			assert.NotNil(t, resp.Data["code"])
+			assert.Regexp(t, "[a-zA-Z0-9]{32}", resp.Data["code"].(string))
+			assert.NotNil(t, resp.Data["state"])
+			assert.NotEmpty(t, resp.Data["state"].(string))
+>>>>>>> f2ce49991 (Return state in response)
 		})
 	}
 }
