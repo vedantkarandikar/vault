@@ -469,7 +469,7 @@ func oidcProviderPaths(i *IdentityStore) []*framework.Path {
 				},
 			},
 			HelpSynopsis:    "Provides the OIDC UserInfo Endpoint.",
-			HelpDescription: "The OIDC UserInfo Endpoint TODO.",
+			HelpDescription: "The OIDC UserInfo Endpoint returns claims about the authenticated end-user.",
 		},
 	}
 }
@@ -1603,14 +1603,9 @@ func authResponse(code, state, errorCode, errorDescription string) (*logical.Res
 
 	return &logical.Response{
 		Data: map[string]interface{}{
-<<<<<<< HEAD
 			logical.HTTPStatusCode:  statusCode,
 			logical.HTTPRawBody:     body,
 			logical.HTTPContentType: "application/json",
-=======
-			"code":  code,
-			"state": state,
->>>>>>> f2ce49991 (Return state in response)
 		},
 	}, nil
 }
@@ -1638,17 +1633,17 @@ func (i *IdentityStore) pathOIDCToken(ctx context.Context, req *logical.Request,
 	headerReq := &http.Request{Header: req.Headers}
 	clientID, clientSecret, ok := headerReq.BasicAuth()
 	if !ok {
-		return tokenResponse(nil, ErrTokenInvalidRequest, "client failed authentication")
+		return tokenResponse(nil, ErrTokenInvalidRequest, "client failed to authenticate")
 	}
 	client, err := i.clientByID(ctx, req.Storage, clientID)
 	if err != nil {
 		return tokenResponse(nil, ErrTokenServerError, err.Error())
 	}
 	if client == nil {
-		return tokenResponse(nil, ErrTokenInvalidClient, "client failed authentication")
+		return tokenResponse(nil, ErrTokenInvalidClient, "client failed to authenticate")
 	}
 	if client.ClientSecret != clientSecret {
-		return tokenResponse(nil, ErrTokenInvalidClient, "client failed authentication")
+		return tokenResponse(nil, ErrTokenInvalidClient, "client failed to authenticate")
 	}
 
 	// Validate that the client is authorized to use the provider
@@ -1661,6 +1656,9 @@ func (i *IdentityStore) pathOIDCToken(ctx context.Context, req *logical.Request,
 	key, err := i.getNamedKey(ctx, req.Storage, client.Key)
 	if err != nil {
 		return tokenResponse(nil, ErrTokenServerError, err.Error())
+	}
+	if key == nil {
+		return tokenResponse(nil, ErrTokenServerError, fmt.Sprintf("client key %q not found", client.Key))
 	}
 
 	// Validate that the client is authorized to use the key
@@ -1731,8 +1729,8 @@ func (i *IdentityStore) pathOIDCToken(ctx context.Context, req *logical.Request,
 		return tokenResponse(nil, ErrTokenInvalidRequest, "identity entity not authorized by client assignment")
 	}
 
-	// The access token will be a Vault batch token with a policy that only
-	// provides read access to the issuing provider's userinfo endpoint.
+	// The access token is a Vault batch token with a policy that only
+	// provides access to the issuing provider's userinfo endpoint.
 	accessTokenIssuedAt := time.Now()
 	accessTokenExpiry := accessTokenIssuedAt.Add(client.AccessTokenTTL)
 	accessToken := &logical.TokenEntry{
@@ -1741,16 +1739,20 @@ func (i *IdentityStore) pathOIDCToken(ctx context.Context, req *logical.Request,
 		Path:         req.Path,
 		TTL:          client.AccessTokenTTL,
 		CreationTime: accessTokenIssuedAt.Unix(),
+		EntityID:     entity.ID,
 
-		// TODO: Introduce internal-only metadata field?
+		// TODO: Move this to InternalMeta once support is checked in
 		Meta: map[string]string{
 			accessTokenClientIDMeta: client.ClientID,
 			accessTokenScopesMeta:   strings.Join(authCodeEntry.scopes, scopesDelimiter),
 		},
 
-		// TODO: This inherits policies from the entity. Do we want that behavior?
-		//       Otherwise, InlinePolicy field with appropriate policy can be introduced.
-		EntityID: entity.ID,
+		// TODO: Add the InlinePolicy once support is checked in
+		//InlinePolicy: fmt.Sprintf(`
+		//	path "identity/oidc/provider/%s/userinfo" {
+		//		capabilities = ["read", "update"]
+		//	}
+		//`, name),
 	}
 	err = i.tokenStorer.TokenStore().create(ctx, accessToken)
 	if err != nil {
@@ -1885,7 +1887,10 @@ func (i *IdentityStore) pathOIDCUserInfo(ctx context.Context, req *logical.Reque
 		return userInfoResponse(nil, ErrUserInfoServerError, err.Error())
 	}
 	if te == nil {
-		return userInfoResponse(nil, ErrUserInfoInvalidToken, "access token not found")
+		return userInfoResponse(nil, ErrUserInfoInvalidToken, "access token is expired, revoked, malformed, or invalid")
+	}
+	if te.Type != logical.TokenTypeBatch {
+		return userInfoResponse(nil, ErrUserInfoInvalidToken, "access token is expired, revoked, malformed, or invalid")
 	}
 
 	// Get the client ID that originated the request from the token metadata
