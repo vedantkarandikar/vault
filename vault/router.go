@@ -861,24 +861,41 @@ func (r *Router) LoginPath(ctx context.Context, path string) bool {
 		}
 
 		segments := make([]string, 0, len(splitCurrWCPath))
+		matchFound := true
 		for i, wcPathPart := range splitCurrWCPath {
 			switch {
-			case wcPathPart == "+":
+			case wcPathPart == "+", wcPathPart == reqPathParts[i]:
 				segments = append(segments, reqPathParts[i])
-
-			case wcPathPart == reqPathParts[i]:
-				segments = append(segments, reqPathParts[i])
-
 			case isPrefix && i == len(splitCurrWCPath)-1 && strings.HasPrefix(reqPathParts[i], wcPathPart):
 				segments = append(segments, reqPathParts[i:]...)
+			default:
+				// we encounted segments that did not match
+				// this flag will prevent false positives when currWCPath is a prefix
+				matchFound = false
+				break
 			}
 		}
 		result := strings.Join(segments, "/")
+		if matchFound && isPrefix && strings.HasPrefix(remain, result) {
+			return true
+		}
 		if result == remain {
 			return true
 		}
 	}
 	return false
+}
+
+func isValidWildcardPath(path string) (bool, error) {
+	switch {
+	case strings.Count(path, "*") > 1:
+		return false, fmt.Errorf("path %q: invalid use of wildcards (multiple '*' is forbidden)", path)
+	case strings.Contains(path, "+*"):
+		return false, fmt.Errorf("path %q: invalid use of wildcards ('+*' is forbidden)", path)
+	case strings.Contains(path, "*") && path[len(path)-1] != '*':
+		return false, fmt.Errorf("path %q: invalid use of wildcards ('*' is only allowed at the end of a path)", path)
+	}
+	return true, nil
 }
 
 // parseUnauthenticatedPaths converts a list of special paths to a
@@ -887,8 +904,8 @@ func parseUnauthenticatedPaths(paths []string) (*loginPathsEntry, error) {
 	var tempPaths []string
 	tempWildcardPaths := make(map[string]bool, len(paths))
 	for _, path := range paths {
-		if strings.Contains(path, "+*") {
-			return nil, fmt.Errorf("path %q: invalid use of wildcards ('+*' is forbidden)", path)
+		if ok, err := isValidWildcardPath(path); !ok {
+			return nil, err
 		}
 
 		if path == "+" || strings.Count(path, "/+") > 0 || strings.HasPrefix(path, "+/") {

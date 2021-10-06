@@ -348,11 +348,15 @@ func TestRouter_LoginPath(t *testing.T) {
 		Login: []string{
 			"login",
 			"oauth/*",
+			"glob1*",
+			"+/wildcard/glob2*",
 			"end1/+",
 			"end2/+/",
 			"end3/+/*",
-			"end4/+/+/login",
+			"middle1/+/bar",
+			"middle2/+/+/bar",
 			"+/begin",
+			"+/around/+/",
 		},
 	}
 	err = r.Mount(n, "auth/foo/", &MountEntry{UUID: meUUID, Accessor: "authfooaccessor", NamespaceID: namespace.RootNamespaceID, namespace: namespace.RootNamespace}, view)
@@ -372,36 +376,63 @@ func TestRouter_LoginPath(t *testing.T) {
 		{"auth/foo/oauth", false},
 		{"auth/foo/oauth/", true},
 		{"auth/foo/oauth/redirect", true},
+		{"auth/foo/oauth/redirect/", true},
+		{"auth/foo/oauth/redirect/bar", true},
+		{"auth/foo/glob1", true},
+		{"auth/foo/glob1/", true},
+		{"auth/foo/glob1/redirect", true},
 
 		// Wildcard cases
 
+		// "+/wildcard/glob2*"
+		{"auth/foo/bar/wildcard/glob2", true},
+		{"auth/foo/bar/wildcard/glob2/", true},
+		{"auth/foo/bar/wildcard/glob2/baz", true},
 		// "end1/+"
 		{"auth/foo/end1", false},
+		{"auth/foo/end1/", true},
 		{"auth/foo/end1/bar", true},
 		{"auth/foo/end1/bar/", false},
 		{"auth/foo/end1/bar/baz", false},
 		// "end2/+/"
 		{"auth/foo/end2", false},
+		{"auth/foo/end2/", false},
 		{"auth/foo/end2/bar", false},
 		{"auth/foo/end2/bar/", true},
 		{"auth/foo/end2/bar/baz", false},
 		// "end3/+/*"
 		{"auth/foo/end3", false},
+		{"auth/foo/end3/", false},
 		{"auth/foo/end3/bar", false},
 		{"auth/foo/end3/bar/", true},
 		{"auth/foo/end3/bar/baz", true},
-		// "end4/+/+/*"
-		{"auth/foo/end4", false},
-		{"auth/foo/end4/bar", false},
-		{"auth/foo/end4/bar/", false},
-		{"auth/foo/end4/bar/baz", false},
-		{"auth/foo/end4/bar/baz/", false},
-		{"auth/foo/end4/bar/baz/login", true},
-		{"auth/foo/end4/bar/baz/login/", false},
+		{"auth/foo/end3/bar/baz/", true},
+		{"auth/foo/end3/bar/baz/qux", true},
+		{"auth/foo/end3/bar/baz/qux/qoo", true},
+		{"auth/foo/end3/bar/baz/qux/qoo/qaa", true},
+		// "middle1/+/bar",
+		{"auth/foo/middle1/bar", false},
+		{"auth/foo/middle1/bar/", false},
+		{"auth/foo/middle1/bar/qux", false},
+		{"auth/foo/middle1/bar/bar", true},
+		{"auth/foo/middle1/bar/bar/", false},
+		// "middle2/+/+/bar",
+		{"auth/foo/middle2/bar", false},
+		{"auth/foo/middle2/bar/", false},
+		{"auth/foo/middle2/bar/baz", false},
+		{"auth/foo/middle2/bar/baz/", false},
+		{"auth/foo/middle2/bar/baz/bar", true},
+		{"auth/foo/middle2/bar/baz/bar/", false},
 		// "+/begin"
 		{"auth/foo/bar/begin", true},
 		{"auth/foo/bar/begin/", false},
 		{"auth/foo/begin", false},
+		// "+/around/+/"
+		{"auth/foo/bar/around", false},
+		{"auth/foo/bar/around/", false},
+		{"auth/foo/bar/around/baz", false},
+		{"auth/foo/bar/around/baz/", true},
+		{"auth/foo/bar/around/baz/qux", false},
 	}
 
 	for _, tc := range tcases {
@@ -551,13 +582,33 @@ func TestParseUnauthenticatedPaths(t *testing.T) {
 }
 
 func TestParseUnauthenticatedPaths_Error(t *testing.T) {
-	// inputs
-	invalidPaths := []string{
-		"/foo/+*",
+	type tcase struct {
+		paths []string
+		err   string
+	}
+	tcases := []tcase{
+		{
+			[]string{"/foo/+*"},
+			"path \"/foo/+*\": invalid use of wildcards ('+*' is forbidden)",
+		},
+		{
+			[]string{"/foo/*/*"},
+			"path \"/foo/*/*\": invalid use of wildcards (multiple '*' is forbidden)",
+		},
+		{
+			[]string{"*/foo/*"},
+			"path \"*/foo/*\": invalid use of wildcards (multiple '*' is forbidden)",
+		},
+		{
+			[]string{"*/foo/"},
+			"path \"*/foo/\": invalid use of wildcards ('*' is only allowed at the end of a path)",
+		},
 	}
 
-	_, err := parseUnauthenticatedPaths(invalidPaths)
-	if !strings.Contains(err.Error(), "path \"/foo/+*\": invalid use of wildcards ('+*' is forbidden)") {
-		t.Fatalf("err: %v", err)
+	for _, tc := range tcases {
+		_, err := parseUnauthenticatedPaths(tc.paths)
+		if err == nil || err != nil && !strings.Contains(err.Error(), tc.err) {
+			t.Fatalf("bad: path: %s expect: %v got %v", tc.paths, tc.err, err)
+		}
 	}
 }
