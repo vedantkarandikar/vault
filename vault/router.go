@@ -3,6 +3,7 @@ package vault
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -61,8 +62,10 @@ type routeEntry struct {
 
 // loginPathsEntry is used to hold the routeEntry loginPaths
 type loginPathsEntry struct {
-	paths         *radix.Tree
-	wildcardPaths map[string]bool
+	paths *radix.Tree
+	// this sits in the hot path of requests so we are micro-optimizing by
+	// storing pre-split slices of path segments
+	wildcardPaths [][]string
 }
 
 type ValidateMountResponse struct {
@@ -837,63 +840,67 @@ func (r *Router) LoginPath(ctx context.Context, path string) bool {
 
 	// check Login Paths containing wildcards
 	reqPathParts := strings.Split(remain, "/")
-	for wcPath := range pe.wildcardPaths {
-		if wcPath == "" {
-			continue
-		}
-		isPrefix := false
-
-		currWCPath := wcPath
-		if currWCPath[len(currWCPath)-1] == '*' {
-			isPrefix = true
-			currWCPath = currWCPath[0 : len(currWCPath)-1]
-		}
-
-		splitCurrWCPath := strings.Split(currWCPath, "/")
-
-		if len(reqPathParts) < len(splitCurrWCPath) {
-			// check if the path coming in is shorter; if so it can't match
-			continue
-		}
-		if !isPrefix && len(splitCurrWCPath) != len(reqPathParts) {
-			// If it's not a prefix we expect the same number of segments
-			continue
-		}
-
-		segments := make([]string, 0, len(splitCurrWCPath))
-		matchFound := true
-		for i, wcPathPart := range splitCurrWCPath {
-			switch {
-			case wcPathPart == "+", wcPathPart == reqPathParts[i]:
-				segments = append(segments, reqPathParts[i])
-			case isPrefix && i == len(splitCurrWCPath)-1 && strings.HasPrefix(reqPathParts[i], wcPathPart):
-				segments = append(segments, reqPathParts[i:]...)
-			default:
-				// we encounted segments that did not match
-				// this flag will prevent false positives when currWCPath is a prefix
-				matchFound = false
-				break
-			}
-		}
-		result := strings.Join(segments, "/")
-		if matchFound && isPrefix && strings.HasPrefix(remain, result) {
-			return true
-		}
-		if result == remain {
+	for _, wcPath := range pe.wildcardPaths {
+		if pathMatchesWildcardPath(reqPathParts, wcPath) {
 			return true
 		}
 	}
 	return false
 }
 
+// pathMatchesWildcardPath returns true if the path made up of the pathParts
+// slice matches the given wildcard path string
+func pathMatchesWildcardPath(pathParts, wcPath []string) bool {
+	if len(wcPath) == 0 {
+		return false
+	}
+	isPrefix := false
+
+	currWCPath := make([]string, len(wcPath))
+	copy(currWCPath, wcPath)
+	if strings.Contains(currWCPath[len(currWCPath)-1], "*") {
+		isPrefix = true
+		currWCPath[len(currWCPath)-1] = strings.Replace(currWCPath[len(currWCPath)-1], "*", "", -1)
+	}
+
+	if len(pathParts) < len(currWCPath) {
+		// check if the path coming in is shorter; if so it can't match
+		return false
+	}
+	if !isPrefix && len(currWCPath) != len(pathParts) {
+		// If it's not a prefix we expect the same number of segments
+		return false
+	}
+
+	for i, wcPathPart := range currWCPath {
+		switch {
+		case wcPathPart == "+":
+		case wcPathPart == pathParts[i]:
+		case isPrefix && i == len(currWCPath)-1 && strings.HasPrefix(pathParts[i], wcPathPart):
+		default:
+			// we encountered segments that did not match
+			return false
+		}
+	}
+	return true
+}
+
+func wildcardError(path, msg string) error {
+	return fmt.Errorf("path %q: invalid use of wildcards %s", path, msg)
+}
+
 func isValidWildcardPath(path string) (bool, error) {
+	re := regexp.MustCompile(`\++\w|\w\++`)
+
 	switch {
 	case strings.Count(path, "*") > 1:
-		return false, fmt.Errorf("path %q: invalid use of wildcards (multiple '*' is forbidden)", path)
+		return false, wildcardError(path, "(multiple '*' is forbidden)")
 	case strings.Contains(path, "+*"):
-		return false, fmt.Errorf("path %q: invalid use of wildcards ('+*' is forbidden)", path)
+		return false, wildcardError(path, "('+*' is forbidden)")
 	case strings.Contains(path, "*") && path[len(path)-1] != '*':
-		return false, fmt.Errorf("path %q: invalid use of wildcards ('*' is only allowed at the end of a path)", path)
+		return false, wildcardError(path, "('*' is only allowed at the end of a path)")
+	case re.MatchString(path):
+		return false, wildcardError(path, "('+' is not allowed next to a non-slash)")
 	}
 	return true, nil
 }
@@ -902,16 +909,17 @@ func isValidWildcardPath(path string) (bool, error) {
 // loginPathsEntry
 func parseUnauthenticatedPaths(paths []string) (*loginPathsEntry, error) {
 	var tempPaths []string
-	tempWildcardPaths := make(map[string]bool, len(paths))
+	tempWildcardPaths := make([][]string, 0)
 	for _, path := range paths {
 		if ok, err := isValidWildcardPath(path); !ok {
 			return nil, err
 		}
 
-		if path == "+" || strings.Count(path, "/+") > 0 || strings.HasPrefix(path, "+/") {
-			// paths with wildcards are not stored in the radix tree because
-			// the radix tree does not handle wildcards in the middle of strings
-			tempWildcardPaths[path] = true
+		if strings.Contains(path, "+") {
+			// Paths with wildcards are not stored in the radix tree because
+			// the radix tree does not handle wildcards in the middle of strings.
+			// We are micro-optimizing by storing pre-split slices of path segments
+			tempWildcardPaths = append(tempWildcardPaths, strings.Split(path, "/"))
 		} else {
 			// accumulate paths that do not contain wildcards
 			// to be stored in the radix tree
