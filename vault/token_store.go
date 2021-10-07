@@ -481,8 +481,13 @@ func (c *Core) LookupToken(ctx context.Context, token string) (*logical.TokenEnt
 	return c.tokenStore.Lookup(ctx, token)
 }
 
-func (c *Core) TokenStore() *TokenStore {
-	return c.tokenStore
+// CreateToken creates the given token in the core's token store.
+func (c *Core) CreateToken(ctx context.Context, entry *logical.TokenEntry) error {
+	if c.tokenStore == nil {
+		return errors.New("unable to create token with nil token store")
+	}
+
+	return c.tokenStore.create(ctx, entry)
 }
 
 // TokenStore is used to manage client tokens. Tokens are used for
@@ -917,20 +922,20 @@ func (ts *TokenStore) create(ctx context.Context, entry *logical.TokenEntry) err
 		// encrypt, skip persistence
 		entry.ID = ""
 		pEntry := &pb.TokenEntry{
-			Parent:                  entry.Parent,
-			Policies:                entry.Policies,
-			Path:                    entry.Path,
-			Meta:                    entry.Meta,
-			DisplayName:             entry.DisplayName,
-			CreationTime:            entry.CreationTime,
-			TTL:                     int64(entry.TTL),
-			Role:                    entry.Role,
-			EntityID:                entry.EntityID,
-			NamespaceID:             entry.NamespaceID,
-			Type:                    uint32(entry.Type),
-			InternalMeta:            entry.InternalMeta,
-			InlinePolicy:            entry.InlinePolicy,
-			SkipIdentityInheritance: entry.SkipIdentityInheritance,
+			Parent:             entry.Parent,
+			Policies:           entry.Policies,
+			Path:               entry.Path,
+			Meta:               entry.Meta,
+			DisplayName:        entry.DisplayName,
+			CreationTime:       entry.CreationTime,
+			TTL:                int64(entry.TTL),
+			Role:               entry.Role,
+			EntityID:           entry.EntityID,
+			NamespaceID:        entry.NamespaceID,
+			Type:               uint32(entry.Type),
+			InternalMeta:       entry.InternalMeta,
+			InlinePolicy:       entry.InlinePolicy,
+			NoIdentityPolicies: entry.NoIdentityPolicies,
 		}
 
 		boundCIDRs := make([]string, len(entry.BoundCIDRs))
@@ -3056,7 +3061,7 @@ func (ts *TokenStore) handleLookup(ctx context.Context, req *logical.Request, da
 	}
 
 	if out.EntityID != "" {
-		_, identityPolicies, err := ts.core.fetchEntityAndDerivedPolicies(ctx, tokenNS, out.EntityID, out.SkipIdentityInheritance)
+		_, identityPolicies, err := ts.core.fetchEntityAndDerivedPolicies(ctx, tokenNS, out.EntityID, out.NoIdentityPolicies)
 		if err != nil {
 			return nil, err
 		}

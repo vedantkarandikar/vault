@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"crypto/sha512"
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -18,6 +19,7 @@ import (
 	"github.com/hashicorp/go-memdb"
 	"github.com/hashicorp/go-secure-stdlib/base62"
 	"github.com/hashicorp/go-secure-stdlib/strutil"
+	"github.com/hashicorp/vault/helper/identity"
 	"github.com/hashicorp/vault/helper/namespace"
 	"github.com/hashicorp/vault/sdk/framework"
 	"github.com/hashicorp/vault/sdk/helper/identitytpl"
@@ -1508,7 +1510,7 @@ func (i *IdentityStore) pathOIDCAuthorize(ctx context.Context, req *logical.Requ
 	}
 
 	// Validate that the entity is a member of the client's assignments
-	isMember, err := i.entityHasAssignment(ctx, req.Storage, entity.GetID(), client.Assignments)
+	isMember, err := i.entityHasAssignment(ctx, req.Storage, entity, client.Assignments)
 	if err != nil {
 		return authResponse("", state, ErrAuthServerError, err.Error())
 	}
@@ -1537,7 +1539,7 @@ func (i *IdentityStore) pathOIDCAuthorize(ctx context.Context, req *logical.Requ
 		}
 
 		// Look up the token associated with the request
-		te, err := i.tokenStorer.TokenStore().Lookup(ctx, req.ClientToken)
+		te, err := i.tokenStorer.LookupToken(ctx, req.ClientToken)
 		if err != nil {
 			return authResponse("", state, ErrAuthServerError, err.Error())
 		}
@@ -1642,7 +1644,7 @@ func (i *IdentityStore) pathOIDCToken(ctx context.Context, req *logical.Request,
 	if client == nil {
 		return tokenResponse(nil, ErrTokenInvalidClient, "client failed to authenticate")
 	}
-	if client.ClientSecret != clientSecret {
+	if subtle.ConstantTimeCompare([]byte(client.ClientSecret), []byte(clientSecret)) == 0 {
 		return tokenResponse(nil, ErrTokenInvalidClient, "client failed to authenticate")
 	}
 
@@ -1693,7 +1695,7 @@ func (i *IdentityStore) pathOIDCToken(ctx context.Context, req *logical.Request,
 	}
 	authCodeEntry, ok := authCodeEntryRaw.(*authCodeCacheEntry)
 	if !ok {
-		return tokenResponse(nil, ErrTokenServerError, "failed type assertion for authorization code entry")
+		return tokenResponse(nil, ErrTokenServerError, "authorization grant is invalid or expired")
 	}
 
 	// Ensure the authorization code was issued to the authenticated client
@@ -1721,7 +1723,7 @@ func (i *IdentityStore) pathOIDCToken(ctx context.Context, req *logical.Request,
 	}
 
 	// Validate that the entity is a member of the client's assignments
-	isMember, err := i.entityHasAssignment(ctx, req.Storage, entity.GetID(), client.Assignments)
+	isMember, err := i.entityHasAssignment(ctx, req.Storage, entity, client.Assignments)
 	if err != nil {
 		return tokenResponse(nil, ErrTokenServerError, err.Error())
 	}
@@ -1734,27 +1736,27 @@ func (i *IdentityStore) pathOIDCToken(ctx context.Context, req *logical.Request,
 	accessTokenIssuedAt := time.Now()
 	accessTokenExpiry := accessTokenIssuedAt.Add(client.AccessTokenTTL)
 	accessToken := &logical.TokenEntry{
-		Type:         logical.TokenTypeBatch,
-		NamespaceID:  ns.ID,
-		Path:         req.Path,
-		TTL:          client.AccessTokenTTL,
-		CreationTime: accessTokenIssuedAt.Unix(),
-		EntityID:     entity.ID,
-
-		// TODO: Move this to InternalMeta once support is checked in
+		Type:               logical.TokenTypeBatch,
+		NamespaceID:        ns.ID,
+		Path:               req.Path,
+		TTL:                client.AccessTokenTTL,
+		CreationTime:       accessTokenIssuedAt.Unix(),
+		EntityID:           entity.ID,
+		NoIdentityPolicies: true,
 		Meta: map[string]string{
+			"oidc_token_type": "access token",
+		},
+		InternalMeta: map[string]string{
 			accessTokenClientIDMeta: client.ClientID,
 			accessTokenScopesMeta:   strings.Join(authCodeEntry.scopes, scopesDelimiter),
 		},
-
-		// TODO: Add the InlinePolicy once support is checked in
-		//InlinePolicy: fmt.Sprintf(`
-		//	path "identity/oidc/provider/%s/userinfo" {
-		//		capabilities = ["read", "update"]
-		//	}
-		//`, name),
+		InlinePolicy: fmt.Sprintf(`
+			path "identity/oidc/provider/%s/userinfo" {
+				capabilities = ["read", "update"]
+			}
+		`, name),
 	}
-	err = i.tokenStorer.TokenStore().create(ctx, accessToken)
+	err = i.tokenStorer.CreateToken(ctx, accessToken)
 	if err != nil {
 		return tokenResponse(nil, ErrTokenServerError, err.Error())
 	}
@@ -1833,7 +1835,15 @@ func tokenResponse(response map[string]interface{}, errorCode, errorDescription 
 
 	// Set the error response and status code if error code isn't empty
 	if errorCode != "" {
-		statusCode = http.StatusBadRequest
+		switch errorCode {
+		case ErrTokenInvalidClient:
+			statusCode = http.StatusUnauthorized
+		case ErrTokenServerError:
+			statusCode = http.StatusInternalServerError
+		default:
+			statusCode = http.StatusBadRequest
+		}
+
 		response = map[string]interface{}{
 			"error":             errorCode,
 			"error_description": errorDescription,
@@ -1845,17 +1855,26 @@ func tokenResponse(response map[string]interface{}, errorCode, errorDescription 
 		return nil, err
 	}
 
-	return &logical.Response{
-		Data: map[string]interface{}{
-			logical.HTTPStatusCode:  statusCode,
-			logical.HTTPRawBody:     body,
-			logical.HTTPContentType: "application/json",
+	data := map[string]interface{}{
+		logical.HTTPStatusCode:  statusCode,
+		logical.HTTPRawBody:     body,
+		logical.HTTPContentType: "application/json",
 
-			// Token responses must include the following HTTP response headers
-			// https://openid.net/specs/openid-connect-core-1_0.html#TokenResponse
-			logical.HTTPCacheControlHeader: "no-store",
-			logical.HTTPPragmaHeader:       "no-cache",
-		},
+		// Token responses must include the following HTTP response headers
+		// https://openid.net/specs/openid-connect-core-1_0.html#TokenResponse
+		logical.HTTPCacheControlHeader: "no-store",
+		logical.HTTPPragmaHeader:       "no-cache",
+	}
+
+	// Set the WWW-Authenticate response header when returning the
+	// invalid_client error code per the OAuth 2.0 spec at
+	// https://datatracker.ietf.org/doc/html/rfc6749#section-5.2
+	if errorCode == ErrTokenInvalidClient {
+		data[logical.HTTPWWWAuthenticateHeader] = "Basic"
+	}
+
+	return &logical.Response{
+		Data: data,
 	}, nil
 }
 
@@ -1882,19 +1901,19 @@ func (i *IdentityStore) pathOIDCUserInfo(ctx context.Context, req *logical.Reque
 	}
 
 	// Look up the access token
-	te, err := i.tokenStorer.TokenStore().Lookup(ctx, req.ClientToken)
+	te, err := i.tokenStorer.LookupToken(ctx, req.ClientToken)
 	if err != nil {
 		return userInfoResponse(nil, ErrUserInfoServerError, err.Error())
 	}
 	if te == nil {
-		return userInfoResponse(nil, ErrUserInfoInvalidToken, "access token is expired, revoked, malformed, or invalid")
+		return userInfoResponse(nil, ErrUserInfoInvalidToken, "access token is expired")
 	}
 	if te.Type != logical.TokenTypeBatch {
-		return userInfoResponse(nil, ErrUserInfoInvalidToken, "access token is expired, revoked, malformed, or invalid")
+		return userInfoResponse(nil, ErrUserInfoInvalidToken, "access token is malformed or invalid")
 	}
 
 	// Get the client ID that originated the request from the token metadata
-	clientID, ok := te.Meta[accessTokenClientIDMeta]
+	clientID, ok := te.InternalMeta[accessTokenClientIDMeta]
 	if !ok {
 		return userInfoResponse(nil, ErrUserInfoServerError, "expected client ID in token metadata")
 	}
@@ -1916,7 +1935,7 @@ func (i *IdentityStore) pathOIDCUserInfo(ctx context.Context, req *logical.Reque
 	}
 
 	// Validate that the entity is a member of the client's assignments
-	isMember, err := i.entityHasAssignment(ctx, req.Storage, entity.GetID(), client.Assignments)
+	isMember, err := i.entityHasAssignment(ctx, req.Storage, entity, client.Assignments)
 	if err != nil {
 		return userInfoResponse(nil, ErrUserInfoServerError, err.Error())
 	}
@@ -1930,7 +1949,7 @@ func (i *IdentityStore) pathOIDCUserInfo(ctx context.Context, req *logical.Reque
 	}
 
 	// Get the scopes for the access token
-	scopes, ok := te.Meta[accessTokenScopesMeta]
+	scopes, ok := te.InternalMeta[accessTokenScopesMeta]
 	if !ok || len(scopes) == 0 {
 		return userInfoResponse(claims, "", "")
 	}
@@ -2063,11 +2082,15 @@ func computeHashClaim(alg string, input string) (string, error) {
 	return base64.RawURLEncoding.EncodeToString(sum[:len(sum)/2]), nil
 }
 
-// entityHasAssignment returns true if the entity is a member of any of the
-// assignments' groups or entities. Otherwise, returns false or an error.
-func (i *IdentityStore) entityHasAssignment(ctx context.Context, s logical.Storage, entityID string, assignments []string) (bool, error) {
+// entityHasAssignment returns true if the entity is enabled and a member of any
+// of the assignments' groups or entities. Otherwise, returns false or an error.
+func (i *IdentityStore) entityHasAssignment(ctx context.Context, s logical.Storage, entity *identity.Entity, assignments []string) (bool, error) {
+	if entity.GetDisabled() {
+		return false, nil
+	}
+
 	// Get the group IDs that the entity is a member of
-	entityGroups, err := i.MemDBGroupsByMemberEntityID(entityID, true, false)
+	entityGroups, err := i.MemDBGroupsByMemberEntityID(entity.GetID(), true, false)
 	if err != nil {
 		return false, err
 	}
@@ -2093,7 +2116,7 @@ func (i *IdentityStore) entityHasAssignment(ctx context.Context, s logical.Stora
 		}
 
 		// Check if the entity is a member of the assignment's entities
-		if strutil.StrListContains(assignment.EntityIDs, entityID) {
+		if strutil.StrListContains(assignment.EntityIDs, entity.GetID()) {
 			return true, nil
 		}
 	}
