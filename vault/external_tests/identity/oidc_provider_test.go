@@ -1,13 +1,21 @@
 package identity
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
+	"io"
+	"log"
 	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/hashicorp/cap/oidc"
+	"github.com/hashicorp/cap/util"
 	"github.com/hashicorp/go-hclog"
-	"github.com/hashicorp/vault/api"
 	vaulthttp "github.com/hashicorp/vault/http"
 	"github.com/hashicorp/vault/sdk/helper/logging"
 	"github.com/hashicorp/vault/vault"
@@ -100,20 +108,79 @@ func TestOIDC_Path_OIDC_Client_Validation(t *testing.T) {
 	defer p.Done()
 
 	// TODO: authenticate and get the auth code via client.SetToken("foo") + /authorize
-}
+	//       remove dependence on UI and callback here
 
-func setupOIDCTestCluster(t *testing.T, numCores int) (*vault.TestCluster, *api.Client) {
-	logger := logging.NewVaultLogger(hclog.Trace)
-	coreConfig := &vault.CoreConfig{
-		Logger: logger,
-	}
-	clusterOptions := &vault.TestClusterOptions{
-		NumCores:    numCores,
-		HandlerFunc: vaulthttp.Handler,
-	}
-	cluster := vault.NewTestCluster(t, coreConfig, clusterOptions)
-	cluster.Start()
-	vault.TestWaitActive(t, cluster.Cores[0].Core)
+	// Create the OIDC request state
+	oidcRequest, err := oidc.NewRequest(10*time.Minute,
+		"http://127.0.0.1:8251/callback",
+		oidc.WithScopes("openid"))
+	require.NoError(t, err)
 
-	return cluster, cluster.Cores[0].Client
+	// Generate the auth URL to open in the browser
+	authURL, err := p.AuthURL(context.Background(), oidcRequest)
+	require.NoError(t, err)
+
+	errorCh := make(chan error)
+	doneCh := make(chan struct{})
+	signalCh := make(chan os.Signal, 1)
+	signal.Notify(signalCh, syscall.SIGINT, syscall.SIGTERM)
+
+	// Create the HTTP handler to handle the browser redirect and finish the flow
+	http.HandleFunc("/callback", func(w http.ResponseWriter, req *http.Request) {
+		// Obtain the authorization code and state
+		code := req.FormValue("code")
+		state := req.FormValue("state")
+		require.Equal(t, oidcRequest.State(), state)
+
+		// Exchange the authorization code for an ID token and access token
+		token, err := p.Exchange(context.Background(), oidcRequest, state, code)
+		require.NoError(t, err)
+		idToken := token.IDToken()
+
+		// Get the ID token claims
+		var allClaims map[string]interface{}
+		require.NoError(t, idToken.Claims(&allClaims))
+		delete(allClaims, "nonce")
+
+		// Get the sub claim for userinfo validation
+		var subject string
+		if sub, ok := allClaims["sub"].(string); ok {
+			subject = sub
+		}
+
+		// Request userinfo using the access token
+		err = p.UserInfo(context.Background(), token.StaticTokenSource(), subject, &allClaims)
+		require.NoError(t, err)
+
+		claims, err := json.MarshalIndent(allClaims, "", "  ")
+		require.NoError(t, err)
+
+		t.Log(string(claims))
+		_, err = io.WriteString(w, "\n")
+		require.NoError(t, err)
+
+		close(doneCh)
+	})
+
+	// Serve the redirect handler
+	go func() {
+		errorCh <- http.ListenAndServe("127.0.0.1:8251", nil)
+	}()
+
+	// Open the auth URL in the browser
+	err = util.OpenURL(authURL)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// Block until signal, error, or done
+	select {
+	case sig := <-signalCh:
+		fmt.Printf("received signal: %v\n", sig)
+		os.Exit(0)
+	case err := <-errorCh:
+		log.Fatal(err)
+	case <-doneCh:
+		os.Exit(0)
+	}
 }
