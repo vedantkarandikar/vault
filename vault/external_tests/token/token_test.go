@@ -20,9 +20,7 @@ import (
 )
 
 func TestTokenStore_CreateOrphanResponse(t *testing.T) {
-	cluster := vault.NewTestCluster(t, nil, &vault.TestClusterOptions{
-		HandlerFunc: vaulthttp.Handler,
-	})
+	cluster := vault.NewTestCluster(t, nil, &vault.TestClusterOptions{})
 	cluster.Start()
 	defer cluster.Cleanup()
 
