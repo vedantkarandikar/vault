@@ -15,7 +15,6 @@ Router.map(function() {
       this.route('logout');
       this.mount('open-api-explorer', { path: '/api-explorer' });
       this.route('license');
-      this.route('oidc-authorize', { path: '/identity/oidc/provider/my-provider/authorize' });
       this.route('clients', function() {
         this.route('index', { path: '/' });
         this.route('edit');
