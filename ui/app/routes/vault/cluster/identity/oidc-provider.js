@@ -90,7 +90,7 @@ export default class VaultClusterIdentityOidcProviderRoute extends Route {
     } catch (errorRes) {
       let resp = await errorRes.json();
       let code = resp.error;
-      if (code === 'max_age_violation') {
+      if (code === 'max_age_violation' || resp?.errors?.includes('permission denied')) {
         this._redirectToAuth(oidc_name, qp, true);
       } else if (code === 'invalid_redirect_uri') {
         return {
