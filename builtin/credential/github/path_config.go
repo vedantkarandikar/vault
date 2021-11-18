@@ -16,11 +16,15 @@ func pathConfig(b *backend) *framework.Path {
 	p := &framework.Path{
 		Pattern: "config",
 		Fields: map[string]*framework.FieldSchema{
+			"organization_id": {
+				Type:        framework.TypeInt64,
+				Description: "The ID of the organization users must be part of",
+				Required:    true,
+			},
 			"organization": {
 				Type:        framework.TypeString,
 				Description: "The organization users must be part of",
 			},
-
 			"base_url": {
 				Type: framework.TypeString,
 				Description: `The API endpoint to use. Useful if you
@@ -61,6 +65,13 @@ func (b *backend) pathConfigWrite(ctx context.Context, req *logical.Request, dat
 	}
 	if c == nil {
 		c = &config{}
+	}
+
+	if organizationRaw, ok := data.GetOk("organization_id"); ok {
+		c.OrganizationID = organizationRaw.(int64)
+	}
+	if c.OrganizationID == 0 && req.Operation == logical.CreateOperation {
+		return logical.ErrorResponse("organization_id is missing"), nil
 	}
 
 	if organizationRaw, ok := data.GetOk("organization"); ok {
@@ -116,8 +127,9 @@ func (b *backend) pathConfigRead(ctx context.Context, req *logical.Request, data
 	}
 
 	d := map[string]interface{}{
-		"organization": config.Organization,
-		"base_url":     config.BaseURL,
+		"organization_id": config.OrganizationID,
+		"organization":    config.Organization,
+		"base_url":        config.BaseURL,
 	}
 	config.PopulateTokenData(d)
 
@@ -163,8 +175,9 @@ func (b *backend) Config(ctx context.Context, s logical.Storage) (*config, error
 type config struct {
 	tokenutil.TokenParams
 
-	Organization string        `json:"organization" structs:"organization" mapstructure:"organization"`
-	BaseURL      string        `json:"base_url" structs:"base_url" mapstructure:"base_url"`
-	TTL          time.Duration `json:"ttl" structs:"ttl" mapstructure:"ttl"`
-	MaxTTL       time.Duration `json:"max_ttl" structs:"max_ttl" mapstructure:"max_ttl"`
+	Organization   string        `json:"organization" structs:"organization" mapstructure:"organization"`
+	OrganizationID int64         `json:"organization_id" structs:"organization_id" mapstructure:"organization_id"`
+	BaseURL        string        `json:"base_url" structs:"base_url" mapstructure:"base_url"`
+	TTL            time.Duration `json:"ttl" structs:"ttl" mapstructure:"ttl"`
+	MaxTTL         time.Duration `json:"max_ttl" structs:"max_ttl" mapstructure:"max_ttl"`
 }

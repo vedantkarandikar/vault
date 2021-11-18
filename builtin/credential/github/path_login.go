@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"net/url"
-	"strings"
 
 	"github.com/google/go-github/github"
 	"github.com/hashicorp/vault/sdk/framework"
@@ -159,9 +158,9 @@ func (b *backend) verifyCredentials(ctx context.Context, req *logical.Request, t
 		}
 	}
 
-	if config.Organization == "" {
+	if config.OrganizationID == 0 {
 		return nil, logical.ErrorResponse(
-			"organization not found in configuration"), nil
+			"organization_id not found in configuration"), nil
 	}
 
 	client, err := b.Client(token)
@@ -204,7 +203,7 @@ func (b *backend) verifyCredentials(ctx context.Context, req *logical.Request, t
 	}
 
 	for _, o := range allOrgs {
-		if strings.EqualFold(*o.Login, config.Organization) {
+		if *o.ID == config.OrganizationID {
 			org = o
 			break
 		}
